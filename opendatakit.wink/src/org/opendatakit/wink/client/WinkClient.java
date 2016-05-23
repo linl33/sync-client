@@ -1,16 +1,6 @@
 package org.opendatakit.wink.client;
 
-import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.io.UnsupportedEncodingException;
+import java.io.*;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -517,10 +507,12 @@ public class WinkClient {
    * @param appId the application id 
    * @param dirToGetDataFrom the directory that has the data to push to the server
    * @param version ODK version code, 1 or 2
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication or when reading file
+   * @throws JSONException Exception encountered when parsing JSON response
+   * @throws DataFormatException exception thrown when CSV is invalid
    */
   public void pushAllDataToUri(String uri, String appId, String dirToGetDataFrom, String version)
-      throws Exception {
+      throws IOException, JSONException, DataFormatException {
     ArrayList<String> assetsFiles;
     ArrayList<String> tableFiles;
     ArrayList<String> tableIds;
@@ -543,9 +535,7 @@ public class WinkClient {
       File tableDefCSV = new File(tableDefPath);
       if (tableDefCSV.exists()) {
         tableResult = createTableWithCSV(uri, appId, tableId, "", tableDefPath);
-        if (!tableResult.isNull("schemaETag")) {
-          schemaETag = tableResult.getString("schemaETag");
-        }
+        schemaETag = tableResult.optString("schemaETag");
       }
 
       // Create table rows
@@ -557,7 +547,7 @@ public class WinkClient {
         createRowsUsingCSVBulkUpload(uri, appId, tableId, schemaETag, dataRowPath, fLimit);
       }
 
-      LinkedHashMap <String, String> mapRowIdToInstanceDir = new LinkedHashMap<String, String> ();
+      LinkedHashMap <String, String> mapRowIdToInstanceDir = new LinkedHashMap<String, String>();
       
       JSONObject obj = null;
       String resumeCursor = null;
@@ -725,10 +715,11 @@ public class WinkClient {
    * @param appId identifies the application
    * @param version ODK version code, 1 or 2
    * @return JSONObject of the list of app level files
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
    */
   public JSONObject getManifestForAppLevelFiles(String uri, String appId, String version)
-      throws Exception {
+      throws IOException, JSONException {
     JSONObject obj = null;
     
     if (httpClient == null) {
@@ -789,11 +780,11 @@ public class WinkClient {
    * @param relativePathOnServer the relative path on the server where
    * the file will be stored
    * @param version ODK version code, 1 or 2
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication or when reading file
    * @return Http response status code
    */
   public int uploadFile(String uri, String appId, String wholePathToFile,
-      String relativePathOnServer, String version) throws Exception {
+      String relativePathOnServer, String version) throws IOException {
     
     if (httpClient == null) {
       throw new IllegalStateException("The initialization function must be called");
@@ -824,7 +815,7 @@ public class WinkClient {
         System.out.println("uploadFile: file " + wholePathToFile + " does not exist");
         return -1;
       }
-  
+
       //InputStream in = new FileInputStream(file);
       byte[] data = Files.readAllBytes(file.toPath());
   
@@ -970,11 +961,11 @@ public class WinkClient {
    * @param relativePathOnServer the relative path on the server where
    * the file is stored
    * @param version ODK version code, 1 or 2
-   * @throws Exception any exception encountered during this function
+   * @throws IOException Exception encountered during http communication
    * @return HTTP response status code
    */
   public int deleteFile(String uri, String appId, String relativePathOnServer, String version)
-      throws Exception {
+      throws IOException {
     if (uri == null || uri.isEmpty()) {
       throw new IllegalArgumentException("deleteFile: uri cannot be null");
     }
@@ -1028,9 +1019,10 @@ public class WinkClient {
    * @param uri the url for the server
    * @param appId identifies the application
    * @return a JSONObject with the list of tables
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
    */
-  public JSONObject getTables(String uri, String appId) throws Exception {
+  public JSONObject getTables(String uri, String appId) throws IOException, JSONException {
     JSONObject obj = null;
     
     if (httpClient == null) {
@@ -1172,10 +1164,11 @@ public class WinkClient {
    * @param schemaETag identifies an instance of the table
    * @param columns an ArrayList of Column objects which define the columns of the table
    * @return a JSONObject with the representation of the newly created table
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
    */
   public JSONObject createTable(String uri, String appId, String tableId, String schemaETag,
-      ArrayList<Column> columns) throws Exception {
+      ArrayList<Column> columns) throws IOException, JSONException {
     JSONObject tableObj = new JSONObject();
     JSONArray cols = new JSONArray();
     JSONObject col;
@@ -1247,7 +1240,7 @@ public class WinkClient {
       }
       String res = strLine.toString();
   
-      System.out.println("createTable: result is for tableId " + tableId + " is " + res.toString());
+      System.out.println("createTable: result is for tableId " + tableId + " is " + res);
   
       result = new JSONObject(res);
     } finally {
@@ -1392,22 +1385,21 @@ public class WinkClient {
    * @param schemaETag identifies an instance of the table
    * @param csvFilePath file path to the definition.csv file 
    * @return a JSONObject with the representation of the newly created table
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
+   * @throws DataFormatException exception thrown when CSV is invalid
    */
   public JSONObject createTableWithCSV(String uri, String appId, String tableId, String schemaETag,
-      String csvFilePath) throws Exception {
-    ArrayList<Column> cols = new ArrayList<Column>();
-    RFC4180CsvReader reader;
+      String csvFilePath) throws IOException, JSONException, DataFormatException {
+    InputStream csvInputStream;
 
-    File file = new File(csvFilePath);
-    if (!file.exists()) {
-      throw new IllegalArgumentException("createTableWithCSV: file " + csvFilePath + " does not exist");
+    try {
+      csvInputStream = new FileInputStream(new File(csvFilePath));
+    } catch (FileNotFoundException e) {
+      throw new IllegalArgumentException("createTableWithCSV: file " + csvFilePath + " does not exist or cannot be read");
     }
-    InputStream in = new FileInputStream(file);
-    InputStreamReader inputStream = new InputStreamReader(in, Charset.forName("UTF-8"));
-    reader = new RFC4180CsvReader(inputStream);
 
-    return createTableWithCSVProcessing(uri, appId, tableId, schemaETag, cols, reader);
+    return createTableWithCSVInputStream(uri, appId, tableId, schemaETag, csvInputStream);
   }
   
   /**
@@ -1422,57 +1414,77 @@ public class WinkClient {
    * @param schemaETag identifies an instance of the table
    * @param csvInputStream input stream for a table definition csv file 
    * @return a JSONObject with the representation of the newly created table
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication or when reading csvInputStream
+   * @throws JSONException Exception encountered when parsing JSON response
+   * @throws DataFormatException exception thrown when CSV is invalid
    */
   public JSONObject createTableWithCSVInputStream(String uri, String appId, String tableId, String schemaETag,
-      InputStream csvInputStream) throws Exception {
+      InputStream csvInputStream) throws JSONException, IOException, DataFormatException {
     ArrayList<Column> cols = new ArrayList<Column>();
     RFC4180CsvReader reader;
 
     if (csvInputStream.available() <= 0) {
       throw new IllegalArgumentException("createTableWithCSVInputStream: csvInputStream is not available");
     }
-    
-    InputStream in = csvInputStream;
-    InputStreamReader inputStream = new InputStreamReader(in, Charset.forName("UTF-8"));
+
+    InputStreamReader inputStream = new InputStreamReader(csvInputStream, Charset.forName("UTF-8"));
     reader = new RFC4180CsvReader(inputStream);
 
     return createTableWithCSVProcessing(uri, appId, tableId, schemaETag, cols, reader);
   }
 
+  /**
+   * Creates a table on the server with the specified
+   * tableId using a RFC4180CsvReader.
+   * schemaETag should be null if a new table is being
+   * created.
+   *
+   * @param uri the url for the server
+   * @param appId identifies the application
+   * @param tableId the table identifier or name
+   * @param schemaETag identifies an instance of the table
+   * @param cols list of Column
+   * @param reader RFC4180CsvReader
+   * @return a JSONObject with the representation of the newly created table
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
+   * @throws DataFormatException exception thrown when CSV is invalid
+   */
   private JSONObject createTableWithCSVProcessing(String uri, String appId, String tableId,
-      String schemaETag, ArrayList<Column> cols, RFC4180CsvReader reader) throws IOException,
-      DataFormatException, Exception {
+      String schemaETag, ArrayList<Column> cols, RFC4180CsvReader reader)
+      throws IOException, DataFormatException, JSONException {
     Column col;
     JSONObject resultingTable;
-    // Make sure that the first line of the csv file
-    // has the right header
-    String[] firstLine = reader.readNext();
 
-    if (firstLine.length != 4) {
-      throw new DataFormatException(
-          "The csv file used to create a table does not have the correct number of columns");
+    try {
+      // Make sure that the first line of the csv file
+      // has the right header
+      String[] firstLine = reader.readNext();
+
+      if (firstLine.length != 4) {
+        throw new DataFormatException(
+            "The csv file used to create a table does not have the correct number of columns");
+      }
+
+      // Make sure that the first row of the csv file
+      // has the right columns
+      if (!firstLine[0].equals(tableDefElemKey) || !firstLine[1].equals(tableDefElemName) || !firstLine[2].equals(tableDefElemType)
+          || !firstLine[3].equals(tableDefListChildElemKeys)) {
+        throw new DataFormatException(
+            "The csv file used to create a table does not have the correct columns in the first row");
+      }
+
+      String[] line;
+
+      while ((line = reader.readNext()) != null) {
+        col = new Column(line[0], line[1], line[2], line[3]);
+        cols.add(col);
+      }
+
+      resultingTable = createTable(uri, appId, tableId, schemaETag, cols);
+    } finally {
+      reader.close();
     }
-
-    // Make sure that the first row of the csv file
-    // has the right columns
-    if (!firstLine[0].equals(tableDefElemKey) || !firstLine[1].equals(tableDefElemName)
-        || !firstLine[2].equals(tableDefElemType)
-        || !firstLine[3].equals(tableDefListChildElemKeys)) {
-      throw new DataFormatException(
-          "The csv file used to create a table does not have the correct columns in the first row");
-    }
-
-    String[] line;
-
-    while ((line = reader.readNext()) != null) {
-      col = new Column(line[0], line[1], line[2], line[3]);
-      cols.add(col);
-    }
-
-    resultingTable = createTable(uri, appId, tableId, schemaETag, cols);
-
-    reader.close();
 
     return resultingTable;
   }
@@ -1602,11 +1614,11 @@ public class WinkClient {
    * @param appId identifies the application
    * @param tableId the table identifier or name
    * @param schemaETag identifies an instance of the table
-   * @throws Exception any exception encountered during this function
+   * @throws IOException Exception encountered during http communication
    * @return Http response status code
    */
   public int deleteTableDefinition(String uri, String appId, String tableId, String schemaETag)
-      throws Exception {
+      throws IOException {
     if (httpClient == null) {
       throw new IllegalStateException("The initialization function must be called");
     }
@@ -1655,10 +1667,11 @@ public class WinkClient {
    * @param tableId the table identifier or name
    * @param version ODK version code, 1 or 2
    * @return a JSONObject with the list of table level files
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
    */
   public JSONObject getManifestForTableId(String uri, String appId, String tableId, String version)
-      throws Exception {
+      throws JSONException, IOException {
     JSONObject obj = null;
 
     HttpGet request = null;
@@ -1824,9 +1837,11 @@ public class WinkClient {
    * @param fetchLimit query parameter that defines the number of rows to 
    * return
    * @return a JSONObject with the row data
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
    */
   public JSONObject getRows(String uri, String appId, String tableId, String schemaETag,
-      String cursor, String fetchLimit) {
+      String cursor, String fetchLimit) throws JSONException, IOException {
     JSONObject obj = null;
     boolean useCursor = false;
     boolean useFetchLimit = false;
@@ -1893,9 +1908,6 @@ public class WinkClient {
       
       obj = new JSONObject(tableRes);
       System.out.println("getRows: result for " + tableId + " is " + obj.toString());
-
-    } catch (Exception e) {
-      e.printStackTrace();
     } finally {
       if (request != null) {
         request.releaseConnection();
@@ -2130,10 +2142,11 @@ public class WinkClient {
    * @param schemaETag identifies an instance of the table
    * @param rowId the unique identifier for a row in the table
    * @return a JSONObject with the attachments for the row
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
    */
   public JSONObject getManifestForRow(String uri, String appId, String tableId, String schemaETag,
-      String rowId) throws Exception {
+      String rowId) throws IOException, JSONException {
     JSONObject obj = null;
     
     if (httpClient == null) {
@@ -2454,20 +2467,22 @@ public class WinkClient {
    * @param schemaETag identifies an instance of the table
    * @param csvFilePath the file path from which to retrieve the row data
    * @param batchSize the number of rows that will be uploaded to the server at one time
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication
+   * @throws JSONException Exception encountered when parsing JSON response
+   * @throws DataFormatException exception thrown when CSV is invalid
    */
   public void createRowsUsingCSVBulkUpload(String uri, String appId, String tableId,
-      String schemaETag, String csvFilePath, int batchSize) throws Exception {
+      String schemaETag, String csvFilePath, int batchSize) throws IOException,
+      DataFormatException {
     RFC4180CsvReader reader;
-    
-    File file = new File(csvFilePath);
-    if (!file.exists()) {
-      System.out.println("createRowsUsingCSVBulkUpload: file " + csvFilePath + " does not exist");
-    }
 
-    InputStream in = new FileInputStream(file);
-    InputStreamReader inputStream = new InputStreamReader(in, Charset.forName("UTF-8"));
-    reader = new RFC4180CsvReader(inputStream);
+    try {
+      InputStream in = new FileInputStream(new File(csvFilePath));
+      InputStreamReader inputStream = new InputStreamReader(in, Charset.forName("UTF-8"));
+      reader = new RFC4180CsvReader(inputStream);
+    } catch (FileNotFoundException e) {
+      throw new IllegalArgumentException("createRowsUsingCSVBulkUpload: file " + csvFilePath + "does not exist or cannot be read");
+    }
 
     createRowsUsingCSVBulkUploadProcessing(uri, appId, tableId, schemaETag, batchSize, reader);
   }
@@ -2839,12 +2854,11 @@ public class WinkClient {
    * @param asAttachment false to save the data as a file, true to download the data 
    * @param pathToSaveFile file path in which to save the attachment
    * @param relativePathOnServer the path on the server where the attachment resides
-   * @throws Exception any exception encountered is thrown to the caller
-   * 
+   * @throws IOException Exception encountered during http communication or when writing to file
    */
   public void getFileForRow(String uri, String appId, String tableId, String schemaETag,
       String userRowId, boolean asAttachment, String pathToSaveFile, String relativePathOnServer)
-      throws Exception {
+      throws IOException {
 	// There can be multiple files per row
 	// Relative path is valid for rows
     
@@ -2936,12 +2950,12 @@ public class WinkClient {
    * @param dirToSaveFiles file path in which to save the attachments
    * @param filesToGet JSONObject of files - same structure as returned in getManifestForRow
    * @param batchSizeInBytes the number of bytes to transfer in a batch default is 10MB
-   * @throws Exception any exception encountered is thrown to the caller
-   * 
+   * @throws IOException Exception encountered during http communication or when writing to file
+   * @throws JSONException Exception encountered when parsing JSON input
    */
   public void batchGetFilesForRow(String uri, String appId, String tableId, String schemaETag,
 	      String userRowId, String dirToSaveFiles, JSONObject filesToGet, int batchSizeInBytes)
-	      throws Exception {
+      throws JSONException, IOException {
 
     int batchSizeToUse = MAX_BATCH_SIZE;  
 	  
@@ -2992,10 +3006,9 @@ public class WinkClient {
       batchFilesArray.add(file);
       
       if (batchSize >= batchSizeToUse) {
-    	JSONObject batchFiles = new JSONObject();
-    	batchFiles.put("files", batchFilesArray);
-        downloadBatchForRow(uri, appId, tableId, schemaETag,
-          userRowId, dirToSaveFiles, batchFiles); 
+        JSONObject batchFiles = new JSONObject();
+        batchFiles.put("files", batchFilesArray);
+        downloadBatchForRow(uri, appId, tableId, schemaETag, userRowId, dirToSaveFiles, batchFiles);
         batchSize = 0;
         batchFilesArray.clear();
       }
@@ -3004,7 +3017,7 @@ public class WinkClient {
     if (batchSize > 0) {
       JSONObject batchFiles = new JSONObject();
       batchFiles.put("files", batchFilesArray);
-      downloadBatchForRow(uri, appId, tableId, schemaETag,userRowId, dirToSaveFiles, batchFiles); 	
+      downloadBatchForRow(uri, appId, tableId, schemaETag, userRowId, dirToSaveFiles, batchFiles);
     } 
   }
   
@@ -3020,12 +3033,10 @@ public class WinkClient {
    * @param userRowId the unique identifier for a row
    * @param dirToSaveFiles file path in which to save the attachments
    * @param filesToGet JSONObject of files - same structure as returned in getManifestForRow
-   * @throws Exception any exception encountered is thrown to the caller
-   * 
+   * @throws IOException Exception encountered during http communication or when writing to file
    */
   public void downloadBatchForRow(String uri, String appId, String tableId, String schemaETag,
-      String userRowId, String dirToSaveFiles, JSONObject filesToGet)
-      throws Exception {
+      String userRowId, String dirToSaveFiles, JSONObject filesToGet) throws IOException {
     
     if (httpClient == null) {
       throw new IllegalStateException("The initialization function must be called");
@@ -3096,21 +3107,21 @@ public class WinkClient {
       if (response.getStatusLine().getStatusCode() < 200 || response.getStatusLine().getStatusCode() >= 300) {
         return;
       }
-      
+
       String boundaryVal = null;
       Header hdr = response.getEntity().getContentType();
       HeaderElement[] hdrElem = hdr.getElements();
       for (HeaderElement elm : hdrElem) {
-    	int cnt = elm.getParameterCount();
-    	for (int i = 0; i < cnt; i++) {
-    	  NameValuePair nvp = elm.getParameter(i);
-    	  String nvp_name = nvp.getName();
+        int cnt = elm.getParameterCount();
+        for (int i = 0; i < cnt; i++) {
+          NameValuePair nvp = elm.getParameter(i);
+          String nvp_name = nvp.getName();
           String nvp_value = nvp.getValue();
-    	  if (nvp_name.equals(BOUNDARY)) {
+          if (nvp_name.equals(BOUNDARY)) {
             boundaryVal = nvp_value;
             break;
-    	  }
-    	}
+          }
+        }
       }
       
       // Best to return at this point if we can't
@@ -3166,9 +3177,7 @@ public class WinkClient {
         }
         nextPart = multipartStream.readBoundary();
       }
-    } catch (Exception e) {
-      e.printStackTrace();
-    }finally {
+    } finally {
       if (request != null) {
         request.releaseConnection();
       }
@@ -3186,11 +3195,11 @@ public class WinkClient {
    * @param userRowId the unique identifier for a row
    * @param wholePathToFile file path of the file to upload
    * @param relativePathOnServer the path on the server for the attachment 
-   * @throws Exception any exception encountered is thrown to the caller
+   * @throws IOException Exception encountered during http communication or when reading file
    * @return Http response status code
    */
   public int putFileForRow(String uri, String appId, String tableId, String schemaETag,
-      String userRowId, String wholePathToFile, String relativePathOnServer) throws Exception {
+      String userRowId, String wholePathToFile, String relativePathOnServer) throws IOException {
     if (uri == null || uri.isEmpty()) {
       throw new IllegalArgumentException("putFileForRow: uri cannot be null");
     }
